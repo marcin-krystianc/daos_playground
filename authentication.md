@@ -6,17 +6,33 @@ This document describes how authentication and authorization work in DAOS, based
 
 ## Table of Contents
 
+- [Background: DAOS Components](#background-daos-components)
 - [Overview](#overview)
 - [Key Architecture Principles](#key-architecture-principles)
 - [Authentication Flow](#authentication-flow)
 - [Token Structure](#token-structure)
 - [Server-Side Validation](#server-side-validation)
 - [Capability-Based Authorization](#capability-based-authorization)
-- [ACL Matching](#acl-matching)
-- [ClientUserMap](#clientusermap)
-- [Performance Analysis](#performance-analysis)
-- [Security Properties](#security-properties)
+- [libdfs Authentication](#libdfs-authentication)
 - [Important Code Locations](#important-code-locations)
+
+## Background: DAOS Components
+
+To understand the authentication flow, you need to know four DAOS components and how they relate:
+
+- **`libdaos`** (client library, C) — Linked into user applications. Provides the DAOS API (`daos_pool_connect()`, `daos_cont_open()`, etc.). Runs in the application's process and is therefore **untrusted** by the server.
+
+- **`daos_agent`** (agent daemon, Go) — A per-node daemon that acts as a trusted intermediary. It has access to a private key and signs credentials on behalf of client processes. Clients communicate with the agent via a local Unix domain socket.
+
+- **`daos_server`** (control plane, Go) — The main daemon on each storage node. It handles management operations, starts and manages one or more Engine sub-processes, and performs cryptographic verification of credentials. One instance runs per storage node.
+
+- **`daos_engine`** (data plane, C) — A sub-process of `daos_server`, one per physical socket. It handles data I/O, processing RPCs from clients over the network (via RDMA/TCP using the CART library). It delegates credential signature verification to `daos_server` via **dRPC** (DAOS RPC — a lightweight Unix-socket-based RPC protocol for local inter-process communication, not to be confused with gRPC which is used for admin traffic).
+
+**Key DAOS storage concepts used in this document:**
+
+- **Pool** — A reservation of storage across a set of server nodes. Analogous to a filesystem or a logical volume. Has its own ACL.
+- **Container** — A namespace within a pool that holds objects (key-value pairs, arrays, or POSIX files). Has its own ACL, independent of the pool ACL.
+- **Handle** — A server-side session object created when a client connects to a pool or opens a container. Contains cached capabilities (permissions). The client receives only an opaque UUID referencing the handle.
 
 ## Overview
 
@@ -92,7 +108,7 @@ func (m *SecurityModule) getCredential(ctx context.Context, session *drpc.Sessio
 }
 ```
 
-**Critical**: The UID/GID comes from the kernel via `SO_PEERCRED` socket option - the client process cannot forge these values.
+**Critical**: The UID/GID comes from the kernel via the `SO_PEERCRED` socket option. This is a Linux kernel feature that allows one end of a Unix domain socket to retrieve the PID, UID, and GID of the process on the other end. These values are set by the kernel at connection time — the client process cannot forge them.
 
 ### 3. Server Validates Credential (ONE TIME)
 
@@ -211,6 +227,8 @@ message Credential {
 
 **Key insight**: The token contains textual principals for ACL matching, not numerical UIDs/GIDs. This provides better cross-system compatibility and aligns with ACL entries.
 
+**The `@` suffix**: Principal names use the NFSv4 convention `name@domain`. DAOS currently uses an empty domain, so principals look like `"alice@"` or `"users@"`. The trailing `@` is always present and is significant — ACL entries must match this exact format.
+
 ## Server-Side Validation
 
 Validation happens via **dRPC** (Unix Domain Socket) communication:
@@ -236,7 +254,22 @@ The control plane has access to agent certificates (`/etc/daos/certs/clients/age
 
 ## Capability-Based Authorization
 
-After initial validation, subsequent operations check **cached capabilities** without re-validating credentials.
+After initial validation, subsequent operations check **cached capabilities** without re-validating credentials. Capabilities are stored as bitmasks in the server-side handle:
+
+- **Pool capabilities**: `POOL_CAPA_READ` (connect), `POOL_CAPA_CREATE_CONT` (create containers), `POOL_CAPA_DEL_CONT` (delete containers)
+- **Container capabilities**: `CONT_CAPA_READ_DATA`, `CONT_CAPA_WRITE_DATA`, `CONT_CAPA_GET_PROP`, `CONT_CAPA_SET_PROP`, `CONT_CAPA_GET_ACL`, `CONT_CAPA_SET_ACL`, `CONT_CAPA_SET_OWNER`, `CONT_CAPA_DELETE`, and others
+
+On every data operation, the server looks up the handle by UUID and performs a bitwise check:
+
+```c
+// Example: checking if a container handle allows reading data
+if (!(cont_hdl->sch_capas & CONT_CAPA_READ_DATA))
+    return -DER_NO_PERM;
+```
+
+This is a single CPU instruction — no cryptographic verification, no ACL lookup, no string comparison. This is why the "validate once, cache capabilities" design works for DAOS's high-throughput I/O workloads.
+
+**Important tradeoff**: Because capabilities are cached at connection time, ACL changes do not affect existing handles. Users must disconnect and reconnect to pick up updated permissions.
 
 ## libdfs Authentication
 
