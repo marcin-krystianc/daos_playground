@@ -40,16 +40,6 @@ This model is designed for bare-metal HPC clusters where:
   the container's user namespace, not an organization's user directory. There is no
   reliable mapping from container UID to a meaningful DAOS principal like `alice@`.
 
-- **Certificate lifecycle is burdensome.** Provisioning, rotating, and revoking
-  per-agent certificates across a dynamic fleet of Kubernetes worker nodes is
-  operationally expensive. Nodes join and leave the cluster frequently, and each
-  needs its own agent keypair.
-
-- **Misaligned trust boundaries.** In Kubernetes, workload identity is managed
-  by the platform (ServiceAccounts, OIDC tokens, pod identity). Bolting on a
-  separate certificate PKI for DAOS creates a parallel trust domain that doesn't
-  integrate with existing identity infrastructure.
-
 ### Core Insight
 
 In Kubernetes, workload identity is best established by the platform, not by Unix
