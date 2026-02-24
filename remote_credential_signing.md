@@ -40,8 +40,6 @@ This model is designed for bare-metal HPC clusters where:
   the container's user namespace, not an organization's user directory. There is no
   reliable mapping from container UID to a meaningful DAOS principal like `alice@`.
 
-### Core Insight
-
 In Kubernetes, workload identity is best established by the platform, not by Unix
 UIDs. We propose running the agent as a **sidecar container** within each application
 pod, where:
