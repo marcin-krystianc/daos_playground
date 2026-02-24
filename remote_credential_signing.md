@@ -20,7 +20,7 @@ DAOS authentication relies on the `daos_agent` having access to a **private RSA 
 (`/etc/daos/certs/agent.key`) to sign credentials. The corresponding public
 certificate (`agent.crt`) is deployed to every DAOS server node for verification.
 The agent determines client identity via the `SO_PEERCRED` kernel mechanism on a
-Unix domain socket — it reads the connecting process's UID/GID, resolves them to
+Unix domain socket - it reads the connecting process's UID/GID, resolves them to
 usernames, and signs the result.
 
 This model is designed for bare-metal HPC clusters where:
@@ -36,7 +36,7 @@ This model is designed for bare-metal HPC clusters where:
   secrets are either mounted into pods (accessible to the app) or stored externally.
 
 - **`SO_PEERCRED` UIDs are meaningless in containers.** Inside a container, the UID
-  may be `root` (0), a hardcoded non-root UID like 1000, or arbitrary — it reflects
+  may be `root` (0), a hardcoded non-root UID like 1000, or arbitrary - it reflects
   the container's user namespace, not an organization's user directory. There is no
   reliable mapping from container UID to a meaningful DAOS principal like `alice@`.
 
@@ -89,7 +89,7 @@ identity, forwards it to the CredSigner, and returns the signed DAOS credential 
 
 ### Non-Goals
 
-- **Changing the auth flavor.** This proposal uses `AUTH_SYS` — the token format and
+- **Changing the auth flavor.** This proposal uses `AUTH_SYS` - the token format and
   server-side validation are unchanged. This is not a new auth flavor like `AUTH_KRB5`.
 
 ---
@@ -136,7 +136,7 @@ For reference, the current `AUTH_SYS` credential flow (see
 - Step 2: `SO_PEERCRED` returns a container UID (e.g., 0 or 1000) with no meaningful
   mapping to a DAOS user.
 - Step 3: Local `/etc/passwd` inside the container doesn't contain real users.
-- Step 5: Requires `agent.key` on the node — difficult to protect in K8s.
+- Step 5: Requires `agent.key` on the node - difficult to protect in K8s.
 
 ---
 
@@ -219,7 +219,7 @@ service.
 
 3. **CredSigner extracts identity from JWT.** The CredSigner validates the JWT and
    uses its claims (`sub`, `groups`, etc.) to build the `AUTH_SYS` token. The agent
-   does not need to send user/group information separately — the JWT is the single
+   does not need to send user/group information separately - the JWT is the single
    source of truth.
 
 4. **Server side is unchanged.** Steps 10-14 are identical to today. The DAOS server
@@ -291,7 +291,7 @@ audience.
 ### Step 3: Agent Sends JWT to CredSigner
 
 The agent forwards the JWT to the CredSigner. Since the JWT contains all necessary
-identity information, the request is simple — just the JWT itself plus optional
+identity information, the request is simple - just the JWT itself plus optional
 metadata.
 
 ```
@@ -306,7 +306,7 @@ Agent Sidecar                  CredSigner
   │                                  │
 ```
 
-The `machinename` is the only field the agent provides beyond the JWT — it identifies
+The `machinename` is the only field the agent provides beyond the JWT - it identifies
 the originating pod/host for the `Sys.machinename` field in the DAOS credential.
 All user identity (principal, groups) comes from the JWT claims.
 
@@ -314,13 +314,13 @@ All user identity (principal, groups) comes from the JWT claims.
 
 The CredSigner:
 
-1. **Validates the JWT** — checks signature (against IdentityServer's JWKS), expiry,
+1. **Validates the JWT** - checks signature (against IdentityServer's JWKS), expiry,
    audience (`daos-credsigner`), and issuer.
 
-2. **Extracts identity from JWT claims** — the CredSigner reads the user principal
+2. **Extracts identity from JWT claims** - the CredSigner reads the user principal
    and groups directly from the JWT.
 
-3. **Builds the `AUTH_SYS` token** — exactly the same `Sys` protobuf that the agent
+3. **Builds the `AUTH_SYS` token** - exactly the same `Sys` protobuf that the agent
    builds today:
 
    ```go
@@ -334,7 +334,7 @@ The CredSigner:
    }
    ```
 
-4. **Signs the token** — using the same RSA-PSS signing that the agent does today,
+4. **Signs the token** - using the same RSA-PSS signing that the agent does today,
    with the private key that only the CredSigner has:
 
    ```go
@@ -342,14 +342,14 @@ The CredSigner:
    verifier, _ := auth.VerifierFromToken(signingKey, &token)
    ```
 
-5. **Returns the `Credential`** — the same protobuf the agent would have built
+5. **Returns the `Credential`** - the same protobuf the agent would have built
    locally:
 
    ```go
    credential := auth.Credential{
        Token:    &token,
        Verifier: &verifierToken,
-       Origin:   "agent",  // same origin — server uses this to find agent.crt
+       Origin:   "agent",  // same origin - server uses this to find agent.crt
    }
    ```
 
@@ -374,9 +374,9 @@ The DAOS server receives the credential and validates it exactly as it does toda
 he CredSigner is a new, standalone service whose sole job is to accept a JWT,
 validate it, extract user identity from its claims, and return a signed DAOS
 `Credential`. It holds the `agent.key` private key and performs the same RSA-PSS
-signing that the agent does today — the difference is that identity comes from a JWT
+signing that the agent does today - the difference is that identity comes from a JWT
 instead of `SO_PEERCRED`. It returns the existing `security.auth.Credential` protobuf
-from `src/proto/security/auth.proto` — no new credential types are introduced.
+from `src/proto/security/auth.proto` - no new credential types are introduced.
 
 ### Implementation details
 
@@ -402,14 +402,14 @@ not hold any signing keys. Its only jobs are:
 This is the key advantage of the design. The DAOS server (`daos_server` and
 `daos_engine`) requires **zero modifications**:
 
-- The `Credential` protobuf is identical — same `AUTH_SYS` flavor, same token
+- The `Credential` protobuf is identical - same `AUTH_SYS` flavor, same token
   structure, same RSA-PSS verifier.
 - `processValidateCredentials()` in `src/control/server/security_rpc.go` works
   unchanged.
 - `get_auth_sys_payload()` in `src/security/srv_acl.c` works unchanged.
 - ACL matching in `src/security/acl.c` works unchanged.
 
-The server does not know — and does not need to know — whether the credential was
+The server does not know - and does not need to know - whether the credential was
 signed locally by the agent or remotely by the CredSigner, or whether identity was
 determined via `SO_PEERCRED` or JWT. The cryptographic verification is the same
 either way: RSA-PSS signature verified against the public key in `agent.crt`.
